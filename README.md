@@ -1,1 +1,1 @@
-# Controle-Estat-stico-de-Processos
+# Controle-Estatistico-de-Processos
