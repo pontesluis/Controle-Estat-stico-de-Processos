@@ -33,7 +33,7 @@ Este software implementa uma ferramenta completa de Controle Estatístico de Pro
 Clone o repositório e crie um ambiente virtual (recomendado):
 ```bash
 git clone https://github.com/pontesluis/Controle-Estat-stico-de-Processos.git
-cd Controle-Estat-stico-de-Processos
+cd Controle-Estatistico-de-Processos
 
 # Criar ambiente virtual
 python -m venv venv
