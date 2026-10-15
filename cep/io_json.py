@@ -1,11 +1,11 @@
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any
 
 def read_and_validate_json(filepath: Path) -> Dict[str, Any]:
     """
-    Lê o JSON, ignora chaves desconhecidas e valida obrigatoriedades.
-    Erros disparam ValueError para controle seguro e limpo de fluxo.
+    Lê o JSON, ignora chaves desconhecidas e valida obrigatoriedades para todos os tipos de cartas.
     """
     if not filepath.exists():
         raise ValueError(f"Arquivo não encontrado: {filepath}")
@@ -16,7 +16,6 @@ def read_and_validate_json(filepath: Path) -> Dict[str, Any]:
         except json.JSONDecodeError as e:
             raise ValueError(f"Erro de sintaxe no JSON: {e}")
 
-    # Normalizar chaves obrigatórias e essenciais
     required_keys = ["Type", "Goal", "Data"]
     for key in required_keys:
         if key not in data:
@@ -29,11 +28,9 @@ def read_and_validate_json(filepath: Path) -> Dict[str, Any]:
         "Label": data.get("Label", "Processo"),
         "Type": str(data["Type"]).upper(),
         "Goal": str(data["Goal"]).lower(),
-        "Data": data["Data"],
         "Deltas": data.get("Deltas", [0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     }
     
-    # Tratamento de grafias do tipo de carta
     if parsed_data["Type"] in ["X", "XBAR", "X-R", "X̄"]:
         parsed_data["Type"] = "X"
     elif parsed_data["Type"] not in ["R", "IMR", "P", "C"]:
@@ -46,7 +43,6 @@ def read_and_validate_json(filepath: Path) -> Dict[str, Any]:
     else:
         raise ValueError(f"Goal inválido: {data['Goal']}. Esperado: Calibrar ou Acompanhar.")
 
-    # Validar limites de especificação se for contínuo (X, R, IMR)
     if parsed_data["Type"] in ["X", "R", "IMR"]:
         if "LSE" not in data or "LIE" not in data:
             raise ValueError("LSE e LIE são obrigatórios para cartas X, R e IMR.")
@@ -55,38 +51,70 @@ def read_and_validate_json(filepath: Path) -> Dict[str, Any]:
         if parsed_data["LSE"] <= parsed_data["LIE"]:
             raise ValueError("LSE deve ser estritamente maior que LIE.")
 
-    # Validar formato Data
-    if not isinstance(parsed_data["Data"], list) or len(parsed_data["Data"]) == 0:
+    raw_data = data["Data"]
+    if not isinstance(raw_data, list) or len(raw_data) == 0:
         raise ValueError("Chave 'Data' deve ser uma lista não vazia.")
 
-    # Validação estrutural de Data (somente X, R na Etapa 1)
+    parsed_data["Data"] = []
+    
+    # Processamento específico por tipo de carta
     if parsed_data["Type"] in ["X", "R"]:
-        first_len = len(parsed_data["Data"][0])
+        first_len = len(raw_data[0])
         if not (2 <= first_len <= 25):
-            raise ValueError(f"Tamanho da amostra (n) deve estar entre 2 e 25. Encontrado: {first_len}")
-        for i, amostra in enumerate(parsed_data["Data"]):
-            if not isinstance(amostra, list) or len(amostra) != first_len:
-                raise ValueError(f"Amostra no índice {i} tem tamanho inconsistente. Esperado: {first_len}")
-            if any(val is None or not isinstance(val, (int, float)) for val in amostra):
-                raise ValueError(f"Amostra no índice {i} contém valores numéricos inválidos ou nulos/NaN.")
+            raise ValueError(f"Tamanho da amostra (n) deve estar entre 2 e 25.")
+        for i, am in enumerate(raw_data):
+            if not isinstance(am, list) or len(am) != first_len:
+                raise ValueError(f"Amostra no índice {i} tem tamanho inconsistente.")
+            parsed_data["Data"].append([float(v) for v in am])
+            
+    elif parsed_data["Type"] == "IMR":
+        for i, am in enumerate(raw_data):
+            if isinstance(am, list):
+                if len(am) != 1: raise ValueError(f"IMR: amostra {i} deve ter tamanho 1.")
+                parsed_data["Data"].append(float(am[0]))
+            else:
+                parsed_data["Data"].append(float(am))
                 
-        if parsed_data["Goal"] == "calibrar" and len(parsed_data["Data"]) < 20:
-            print(f"AVISO: Calibração iniciada com menos de 20 amostras (m={len(parsed_data['Data'])}).")
+    elif parsed_data["Type"] == "P":
+        for i, am in enumerate(raw_data):
+            if isinstance(am, dict):
+                parsed_data["Data"].append({"n": int(am["n"]), "d": int(am["d"])})
+            elif isinstance(am, list):
+                parsed_data["Data"].append({"n": len(am), "d": sum(am)})
+            else:
+                raise ValueError(f"P: amostra {i} com formato inválido.")
+                
+    elif parsed_data["Type"] == "C":
+        for i, am in enumerate(raw_data):
+            if isinstance(am, list):
+                if len(am) != 1: raise ValueError(f"C: amostra {i} deve ter tamanho 1.")
+                parsed_data["Data"].append(int(am[0]))
+            else:
+                parsed_data["Data"].append(int(am))
 
-    # Acompanhar: checar limites base
+    if parsed_data["Goal"] == "calibrar" and len(parsed_data["Data"]) < 20:
+        print(f"AVISO: Calibração iniciada com menos de 20 amostras (m={len(parsed_data['Data'])}).")
+
     if parsed_data["Goal"] == "acompanhar":
-        if "LSC" not in data or "LIC" not in data:
-            raise ValueError("Em Acompanhar, as chaves 'LSC' e 'LIC' base são obrigatórias no JSON.")
-        parsed_data["LSC_ref"] = float(data["LSC"])
-        parsed_data["LIC_ref"] = float(data["LIC"])
-        parsed_data["LC_ref"] = float(data.get("LC", (parsed_data["LSC_ref"] + parsed_data["LIC_ref"]) / 2.0))
-        
-        # Sigma é inferido se não for passado
-        if "Sigma" in data:
-            parsed_data["Sigma_ref"] = float(data["Sigma"])
-        else:
-            if parsed_data["Type"] in ["X", "R"]:
-                n_size = len(parsed_data["Data"][0])
-                parsed_data["Sigma_ref"] = math.sqrt(n_size) * (parsed_data["LSC_ref"] - parsed_data["LIC_ref"]) / 6.0
-                
+        if parsed_data["Type"] in ["X", "R", "IMR"]:
+            if "LSC" not in data or "LIC" not in data:
+                raise ValueError("Em Acompanhar, as chaves 'LSC' e 'LIC' base são obrigatórias.")
+            parsed_data["LSC_ref"] = float(data["LSC"])
+            parsed_data["LIC_ref"] = float(data["LIC"])
+            parsed_data["LC_ref"] = float(data.get("LC", (parsed_data["LSC_ref"] + parsed_data["LIC_ref"]) / 2.0))
+            if "Sigma" in data:
+                parsed_data["Sigma_ref"] = float(data["Sigma"])
+            else:
+                if parsed_data["Type"] in ["X", "R"]:
+                    n_size = len(parsed_data["Data"][0])
+                    parsed_data["Sigma_ref"] = math.sqrt(n_size) * (parsed_data["LSC_ref"] - parsed_data["LIC_ref"]) / 6.0
+                elif parsed_data["Type"] == "IMR":
+                    parsed_data["Sigma_ref"] = (parsed_data["LSC_ref"] - parsed_data["LIC_ref"]) / 6.0
+        elif parsed_data["Type"] in ["P", "C"]:
+            if "LC" not in data:
+                raise ValueError("Em Acompanhar P/C, a chave 'LC' base é obrigatória.")
+            parsed_data["LC_ref"] = float(data["LC"])
+            if "LSC" in data: parsed_data["LSC_ref"] = float(data["LSC"])
+            if "LIC" in data: parsed_data["LIC_ref"] = float(data["LIC"])
+
     return parsed_data

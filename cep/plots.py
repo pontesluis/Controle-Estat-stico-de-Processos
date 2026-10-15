@@ -1,103 +1,136 @@
-# projeto_cep/cep/plots.py
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, Any
 import math
 
-def plot_xbar_r(res: Dict[str, Any], filepath: Path):
-    """Gera o par de gráficos X̄ e R e mostra-os num ecrã interativo."""
-    fl = res["final_limits"]
-    m = res["m_total"]
-    indices = list(range(m))
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-    
-    meta = res["metadata"]
-    fig.suptitle(f"{meta['Label']} - Carta {res['type']} ({res['goal']})\nMedido em: {meta['Measured_at']}", fontsize=12)
-    
-    # ---------------- CARTA XBAR ----------------
-    x_vals = res["xbar_all"]
-    ax1.plot(indices, x_vals, marker='o', linestyle='-', color='blue')
-    ax1.axhline(fl['lc_x'], color='green', linestyle='-', label='LC')
-    ax1.axhline(fl['lsc_x'], color='red', linestyle='--', label='LSC')
-    ax1.axhline(fl['lic_x'], color='red', linestyle='--', label='LIC')
-    
-    # Zonas
-    sigma_plot_x = (fl['lsc_x'] - fl['lc_x']) / 3.0
-    ax1.axhline(fl['lc_x'] + sigma_plot_x, color='gray', linestyle=':', alpha=0.5)
-    ax1.axhline(fl['lc_x'] + 2*sigma_plot_x, color='gray', linestyle=':', alpha=0.5)
-    ax1.axhline(fl['lc_x'] - sigma_plot_x, color='gray', linestyle=':', alpha=0.5)
-    ax1.axhline(fl['lc_x'] - 2*sigma_plot_x, color='gray', linestyle=':', alpha=0.5)
+def _get_ax_zones(ax, lic, lc, lsc):
+    sig = (lsc - lc) / 3.0
+    ax.axhline(lc + sig, color='gray', linestyle=':', alpha=0.5)
+    ax.axhline(lc + 2*sig, color='gray', linestyle=':', alpha=0.5)
+    ax.axhline(lc - sig, color='gray', linestyle=':', alpha=0.5)
+    ax.axhline(lc - 2*sig, color='gray', linestyle=':', alpha=0.5)
 
-    _mark_violations_and_exclusions(ax1, indices, x_vals, res, fl['lic_x'], fl['lsc_x'])
-    ax1.set_ylabel(f"Média X̄ ({meta['Unit']})")
-    ax1.legend(loc='upper right')
-    ax1.grid(True, alpha=0.3)
-    
-    # ---------------- CARTA R ----------------
-    r_vals = res["r_all"]
-    ax2.plot(indices, r_vals, marker='o', linestyle='-', color='purple')
-    ax2.axhline(fl['lc_r'], color='green', linestyle='-', label='LC')
-    ax2.axhline(fl['lsc_r'], color='red', linestyle='--', label='LSC')
-    ax2.axhline(fl['lic_r'], color='red', linestyle='--', label='LIC')
-
-    _mark_violations_and_exclusions(ax2, indices, r_vals, res, fl['lic_r'], fl['lsc_r'])
-    ax2.set_ylabel(f"Amplitude R ({meta['Unit']})")
-    ax2.set_xlabel("Amostra")
-    ax2.set_xticks(indices)
-    ax2.legend(loc='upper right')
-    ax2.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(filepath, dpi=150) # Continua a guardar o ficheiro PNG
-    plt.show()                     # <--- ABRE A JANELA INTERATIVA NO ECRÃ
-    plt.close()
-
-def _mark_violations_and_exclusions(ax, indices, vals, res, lic, lsc):
-    """Pinta de vermelho pontos que quebram R1 e marca com x os removidos na calibração."""
+def _mark_points(ax, indices, vals, res, lic_arr, lsc_arr):
     for i, v in enumerate(vals):
-        if res["goal"] == "Calibrar" and i in res.get("excluded", []):
+        if v is None: continue
+        is_ex = res["goal"] == "Calibrar" and i in res.get("excluded", [])
+        lic = lic_arr[i] if isinstance(lic_arr, list) else lic_arr
+        lsc = lsc_arr[i] if isinstance(lsc_arr, list) else lsc_arr
+        
+        if is_ex:
             ax.plot(i, v, marker='x', markersize=10, color='gray')
             ax.text(i+0.1, v, "×", color="gray", fontsize=10)
         elif v > lsc or v < lic:
             ax.plot(i, v, marker='o', markersize=8, color='red')
             ax.text(i+0.1, v, "R1", color="red", fontsize=10)
 
-def plot_capability(res: Dict[str, Any], filepath: Path):
-    """Histograma sobreposto à curva de probabilidade normal simulada."""
-    fl = res["final_limits"]
-    mu = fl["lc_x"]
-    sigma = fl["sigma_hat"]
+def plot_xbar_r(res: Dict[str, Any], filepath: Path):
+    fl, m = res["final_limits"], res["m_total"]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig.suptitle(f"{res['metadata']['Label']} - Carta {res['type']} ({res['goal']})", fontsize=12)
     
-    lse = res["lse"]
-    lie = res["lie"]
+    ax1.plot(range(m), res["xbar_all"], marker='o', color='blue')
+    for ax, t, vals, lc, lic, lsc in [(ax1, 'X̄', res["xbar_all"], fl['lc_x'], fl['lic_x'], fl['lsc_x']), 
+                                      (ax2, 'R', res["r_all"], fl['lc_r'], fl['lic_r'], fl['lsc_r'])]:
+        ax.axhline(lc, color='green', label='LC')
+        ax.axhline(lsc, color='red', linestyle='--', label='LSC')
+        ax.axhline(lic, color='red', linestyle='--', label='LIC')
+        if t == 'X̄': _get_ax_zones(ax, lic, lc, lsc)
+        _mark_points(ax, range(m), vals, res, lic, lsc)
+        ax.set_ylabel(f"Média X̄" if t == 'X̄' else f"Amplitude R")
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+    
+    ax2.set_xlabel("Amostra")
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=150)
+    plt.close()
+
+def plot_imr(res: Dict[str, Any], filepath: Path):
+    fl, m = res["final_limits"], res["m_total"]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig.suptitle(f"{res['metadata']['Label']} - Carta IMR ({res['goal']})", fontsize=12)
+    
+    ax1.plot(range(m), res["data_raw"], marker='o', color='blue')
+    ax2.plot(range(m), res["mr_raw"], marker='o', color='purple')
+    
+    for ax, t, vals, lc, lic, lsc in [(ax1, 'I', res["data_raw"], fl['lc_x'], fl['lic_x'], fl['lsc_x']), 
+                                      (ax2, 'MR', res["mr_raw"], fl['lc_mr'], fl['lic_mr'], fl['lsc_mr'])]:
+        ax.axhline(lc, color='green', label='LC')
+        ax.axhline(lsc, color='red', linestyle='--', label='LSC')
+        ax.axhline(lic, color='red', linestyle='--', label='LIC')
+        if t == 'I': _get_ax_zones(ax, lic, lc, lsc)
+        _mark_points(ax, range(m), vals, res, lic, lsc)
+        ax.set_ylabel(f"Individual (I)" if t == 'I' else f"Amplitude Móvel (MR)")
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+    
+    ax2.set_xlabel("Amostra")
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=150)
+    plt.close()
+
+def plot_p(res: Dict[str, Any], filepath: Path):
+    fl, m = res["final_limits"], res["m_total"]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle(f"{res['metadata']['Label']} - Carta P ({res['goal']})", fontsize=12)
+    
+    p_vals = [d["d"]/d["n"] for d in res["data_raw"]]
+    lics = [lim[0] for lim in fl["limits_per_sample"]]
+    lscs = [lim[2] for lim in fl["limits_per_sample"]]
+    
+    ax.plot(range(m), p_vals, marker='o', color='blue', label='Fração (p)')
+    ax.axhline(fl['pbar'], color='green', label='LC')
+    ax.step(range(m), lics, color='red', linestyle='--', where='mid', label='LIC/LSC')
+    ax.step(range(m), lscs, color='red', linestyle='--', where='mid')
+    
+    _mark_points(ax, range(m), p_vals, res, lics, lscs)
+    ax.set_ylabel("Fração Não Conforme")
+    ax.set_xlabel("Amostra")
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=150)
+    plt.close()
+
+def plot_c(res: Dict[str, Any], filepath: Path):
+    fl, m = res["final_limits"], res["m_total"]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle(f"{res['metadata']['Label']} - Carta C ({res['goal']})", fontsize=12)
+    
+    ax.plot(range(m), res["data_raw"], marker='o', color='blue')
+    ax.axhline(fl['lc'], color='green', label='LC')
+    ax.axhline(fl['lsc'], color='red', linestyle='--', label='LSC')
+    ax.axhline(fl['lic'], color='red', linestyle='--', label='LIC')
+    
+    _mark_points(ax, range(m), res["data_raw"], res, fl['lic'], fl['lsc'])
+    ax.set_ylabel("Contagem de Defeitos (c)")
+    ax.set_xlabel("Amostra")
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=150)
+    plt.close()
+
+def plot_capability(res: Dict[str, Any], filepath: Path):
+    fl = res["final_limits"]
+    mu, sigma = fl["lc_x"], fl["sigma_hat"]
+    lse, lie = res["lse"], res["lie"]
     
     fig, ax = plt.subplots(figsize=(8, 5))
-    
-    # Gerando a malha para a curva teórica
-    x_min = min(lie, mu - 4*sigma)
-    x_max = max(lse, mu + 4*sigma)
+    x_min, x_max = min(lie, mu - 4*sigma), max(lse, mu + 4*sigma)
     step = (x_max - x_min) / 200
     
-    xs, ys = [], []
-    curr = x_min
-    while curr <= x_max:
-        xs.append(curr)
-        # PDF Normal
-        pdf = (1.0 / (sigma * math.sqrt(2 * math.pi))) * math.exp(-0.5 * ((curr - mu) / sigma)**2)
-        ys.append(pdf)
-        curr += step
-        
-    ax.plot(xs, ys, color='blue', label='N(LC, σ̂)')
+    xs = [x_min + i*step for i in range(201)]
+    ys = [(1.0 / (sigma * math.sqrt(2 * math.pi))) * math.exp(-0.5 * ((x - mu) / sigma)**2) for x in xs]
     
+    ax.plot(xs, ys, color='blue', label='N(LC, σ̂)')
     ax.axvline(lse, color='red', linestyle='--', label='LSE')
     ax.axvline(lie, color='red', linestyle='--', label='LIE')
     ax.axvline(mu, color='green', linestyle='-', label='Alvo/Média')
     
     ax.set_title(f"Análise de Capacidade - {res['metadata']['Label']}")
     ax.legend()
-    
     plt.tight_layout()
-    plt.savefig(filepath, dpi=150) # Continua a guardar o ficheiro PNG
-    plt.show()                     # <--- ABRE A JANELA INTERATIVA NO ECRÃ
+    plt.savefig(filepath, dpi=150)
     plt.close()
