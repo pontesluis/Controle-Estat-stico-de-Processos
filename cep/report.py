@@ -6,6 +6,16 @@ def save_json_results(data: Dict[str, Any], filepath: Path):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+def _get_violations(rules_dict, idx):
+    if not rules_dict: return ""
+    v = [r for r, indices in rules_dict.items() if idx in indices]
+    return "Violação: " + ", ".join(v) if v else ""
+
+def _status_str(res, idx, rule_keys, rule_names):
+    if res["goal"] == "Calibrar" and idx in res.get("excluded", []): return "Excluída do cálculo"
+    errs = [name for k, name in zip(rule_keys, rule_names) if k in res and idx in res[k]]
+    return "Violação: " + ", ".join(errs) if errs else ""
+
 def generate_text_report(res: Dict[str, Any]) -> str:
     lines = []
     lines.append("="*60)
@@ -40,27 +50,47 @@ def generate_text_report(res: Dict[str, Any]) -> str:
     lines.append("-" * 60)
     lines.append("TABELA DE DADOS (POR AMOSTRA)")
     
+    kal = res.get("kalman", [])
+    has_k = len(kal) > 0
+    
     if res["type"] == "X":
-        lines.append(f"{'i':>3} | {'x̄':>8} | {'r':>8} | {'s':>8} | Status")
+        k_header = " | Kalman(x̄)" if has_k else ""
+        lines.append(f"{'i':>3} | {'x̄':>8} | {'r':>8} | {'s':>8}{k_header} | Status")
         for i in range(res["m_total"]):
-            st = _status_str(res, i, ["rule_1_x", "rule_1_r"], ["R1(X)", "R1(R)"])
-            lines.append(f"{i:>3} | {res['xbar_all'][i]:8.4f} | {res['r_all'][i]:8.4f} | {res['s_all'][i]:8.4f} | {st}")
+            if res["goal"] == "Calibrar":
+                st = _status_str(res, i, ["rule_1_x", "rule_1_r"], ["R1(X)", "R1(R)"])
+            else:
+                st_x = _get_violations(res.get("we_rules_x", {}), i)
+                st_r = _get_violations(res.get("we_rules_r", {}), i)
+                st = f"{st_x} | {st_r}".strip(" |")
+            k_val = f" | {kal[i]:10.4f}" if has_k else ""
+            lines.append(f"{i:>3} | {res['xbar_all'][i]:8.4f} | {res['r_all'][i]:8.4f} | {res['s_all'][i]:8.4f}{k_val} | {st}")
+            
     elif res["type"] == "IMR":
-        lines.append(f"{'i':>3} | {'x':>8} | {'MR':>8} | Status")
+        k_header = " | Kalman(I)" if has_k else ""
+        lines.append(f"{'i':>3} | {'I':>8} | {'MR':>8}{k_header} | Status")
         for i in range(res["m_total"]):
             mr_val = f"{res['mr_raw'][i]:8.4f}" if res['mr_raw'][i] is not None else "     ---"
-            st = _status_str(res, i, ["rule_1_x", "rule_1_mr"], ["R1(I)", "R1(MR)"])
-            lines.append(f"{i:>3} | {res['data_raw'][i]:8.4f} | {mr_val} | {st}")
+            if res["goal"] == "Calibrar":
+                st = _status_str(res, i, ["rule_1_x", "rule_1_mr"], ["R1(I)", "R1(MR)"])
+            else:
+                st_x = _get_violations(res.get("we_rules_x", {}), i)
+                st_mr = _get_violations(res.get("we_rules_mr", {}), i)
+                st = f"{st_x} | {st_mr}".strip(" |")
+            k_val = f" | {kal[i]:10.4f}" if has_k else ""
+            lines.append(f"{i:>3} | {res['data_raw'][i]:8.4f} | {mr_val}{k_val} | {st}")
+            
     elif res["type"] == "P":
         lines.append(f"{'i':>3} | {'n':>6} | {'d':>4} | {'p':>8} | {'LIC':>8} | {'LSC':>8} | Status")
         for i, d in enumerate(res["data_raw"]):
-            st = _status_str(res, i, ["rule_1"], ["R1"])
-            lim = fl["limits_per_sample"][i]
+            st = _status_str(res, i, ["rule_1"], ["R1"]) if res["goal"] == "Calibrar" else _get_violations(res.get("we_rules_p", {}), i)
+            lim = fl["limits_per_sample"][i] if res["goal"] == "Calibrar" else fl["limits_per_sample"][i]
             lines.append(f"{i:>3} | {d['n']:6} | {d['d']:4} | {d['d']/d['n']:8.4f} | {lim[0]:8.4f} | {lim[2]:8.4f} | {st}")
+            
     elif res["type"] == "C":
         lines.append(f"{'i':>3} | {'c':>8} | Status")
         for i, v in enumerate(res["data_raw"]):
-            st = _status_str(res, i, ["rule_1"], ["R1"])
+            st = _status_str(res, i, ["rule_1"], ["R1"]) if res["goal"] == "Calibrar" else _get_violations(res.get("we_rules_c", {}), i)
             lines.append(f"{i:>3} | {v:8} | {st}")
 
     if res["goal"] == "Calibrar":
@@ -99,8 +129,3 @@ def generate_text_report(res: Dict[str, Any]) -> str:
 
     lines.append("-" * 60)
     return "\n".join(lines)
-
-def _status_str(res, idx, rule_keys, rule_names):
-    if res["goal"] == "Calibrar" and idx in res.get("excluded", []): return "Excluída do cálculo"
-    errs = [name for k, name in zip(rule_keys, rule_names) if k in res and idx in res[k]]
-    return "Violação: " + ", ".join(errs) if errs else ""

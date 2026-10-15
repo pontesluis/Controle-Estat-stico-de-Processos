@@ -30,8 +30,10 @@ def main():
         sys.exit(1)
     
     goal = dados_entrada["Goal"]
-    if goal == "calibrar": resultados = run_calibration(dados_entrada, not args.sem_revisao, args.deltas)
-    else: resultados = run_monitoring(dados_entrada, args.deltas)
+    if goal == "calibrar": 
+        resultados = run_calibration(dados_entrada, not args.sem_revisao, args.deltas)
+    else: 
+        resultados = run_monitoring(dados_entrada, args.deltas, use_kalman=True, q=args.q)
         
     out_dir = args.saida / args.dados.stem
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +58,7 @@ def main():
             plot_c(resultados, out_dir / "carta_c.png")
             img_c = plt.imread(out_dir / "carta_c.png")
 
-        fig1 = plt.figure("Carta de Controle")
+        fig1 = plt.figure("Carta de Controlo")
         plt.imshow(img_c)
         plt.axis('off')
         

@@ -2,7 +2,8 @@ from typing import Dict, Any, List
 from cep.stats import sample_mean, sample_range, sample_stdev
 from cep.charts import compute_limits_xbar, compute_limits_r, compute_limits_imr, compute_limits_p, compute_limits_c
 from cep.capability import compute_capability
-from cep.rules import check_rule_1
+from cep.rules import check_we_rules
+from cep.kalman import run_kalman_filter
 from cep.shift import analyze_shift_xbar, analyze_shift_imr, analyze_shift_p, analyze_shift_c
 from cep.constants import get_constants
 
@@ -13,10 +14,10 @@ def run_calibration(config: Dict[str, Any], allow_revision: bool = True, deltas:
     if t == "P": return _cal_p(config, allow_revision, deltas)
     if t == "C": return _cal_c(config, allow_revision, deltas)
 
-def run_monitoring(config: Dict[str, Any], deltas: List[float] = None) -> Dict[str, Any]:
+def run_monitoring(config: Dict[str, Any], deltas: List[float] = None, use_kalman: bool = False, q: float = 0.05) -> Dict[str, Any]:
     t = config["Type"]
-    if t == "X": return _mon_xbar(config, deltas)
-    if t == "IMR": return _mon_imr(config, deltas)
+    if t == "X": return _mon_xbar(config, deltas, use_kalman, q)
+    if t == "IMR": return _mon_imr(config, deltas, use_kalman, q)
     if t == "P": return _mon_p(config, deltas)
     if t == "C": return _mon_c(config, deltas)
 
@@ -137,7 +138,7 @@ def _cal_c(config, allow_revision, deltas):
             "iterations": iterations, "final_limits": iterations[-1], "data_raw": data, "shift": analyze_shift_c(deltas or _d(), iterations[-1]["cbar"])}
 
 # ============================== FASE II (ACOMPANHAR) ==============================
-def _mon_xbar(config, deltas):
+def _mon_xbar(config, deltas, use_kalman, q):
     data = config["Data"]
     n = len(data[0])
     lc_x, lic_x, lsc_x, sigma = config["LC_ref"], config["LIC_ref"], config["LSC_ref"], config["Sigma_ref"]
@@ -147,6 +148,15 @@ def _mon_xbar(config, deltas):
     
     xbar_l = [sample_mean(d) for d in data]
     r_l = [sample_range(d) for d in data]
+    
+    sigma_xbar = sigma / (n**0.5)
+    we_rules = check_we_rules(xbar_l, lc_x, sigma_xbar)
+    we_rules_r = {"R1": [i for i, v in enumerate(r_l) if v < lic_r or v > lsc_r]}
+    
+    kalman_est = []
+    if use_kalman:
+        kalman_est = run_kalman_filter(xbar_l, initial_estimate=lc_x, measurement_variance=(sigma_xbar**2), process_variance=q)
+    
     cap = compute_capability(config["LSE"], config["LIE"], lc_x, sigma)
     cap_atual = compute_capability(config["LSE"], config["LIE"], sum(xbar_l)/len(xbar_l), sigma)
     delta_hat = (sum(xbar_l)/len(xbar_l) - lc_x) / sigma if sigma > 0 else 0
@@ -154,17 +164,23 @@ def _mon_xbar(config, deltas):
     return {"metadata": _get_meta(config), "type": "X", "goal": "Acompanhar", "n": n, "m_total": len(data),
             "final_limits": {"lc_x": lc_x, "lic_x": lic_x, "lsc_x": lsc_x, "lc_r": lc_r, "lic_r": lic_r, "lsc_r": lsc_r, "sigma_hat": sigma},
             "data_raw": data, "xbar_all": xbar_l, "r_all": r_l, "s_all": [sample_stdev(d) for d in data],
-            "rule_1_x": [i for i, v in enumerate(xbar_l) if v < lic_x or v > lsc_x],
-            "rule_1_r": [i for i, v in enumerate(r_l) if v < lic_r or v > lsc_r],
+            "we_rules_x": we_rules, "we_rules_r": we_rules_r, "kalman": kalman_est,
             "capability": cap, "capability_atual": cap_atual, "shift": analyze_shift_xbar(deltas or _d(), n),
             "delta_hat_analysis": analyze_shift_xbar([abs(delta_hat)], n)[0], "lse": config["LSE"], "lie": config["LIE"]}
 
-def _mon_imr(config, deltas):
+def _mon_imr(config, deltas, use_kalman, q):
     data = config["Data"]
     lc_x, lic_x, lsc_x, sigma = config["LC_ref"], config["LIC_ref"], config["LSC_ref"], config["Sigma_ref"]
     mrbar = sigma * 1.128
     lic_mr, lc_mr, lsc_mr = 0.0, mrbar, 3.267 * mrbar
     mr_raw = [None] + [abs(data[i] - data[i-1]) for i in range(1, len(data))]
+    
+    we_rules = check_we_rules(data, lc_x, sigma)
+    we_rules_mr = {"R1": [i for i in range(1, len(data)) if mr_raw[i] < lic_mr or mr_raw[i] > lsc_mr]}
+    
+    kalman_est = []
+    if use_kalman:
+        kalman_est = run_kalman_filter(data, initial_estimate=lc_x, measurement_variance=(sigma**2), process_variance=q)
     
     cap = compute_capability(config["LSE"], config["LIE"], lc_x, sigma)
     cap_atual = compute_capability(config["LSE"], config["LIE"], sum(data)/len(data), sigma)
@@ -172,8 +188,7 @@ def _mon_imr(config, deltas):
     
     return {"metadata": _get_meta(config), "type": "IMR", "goal": "Acompanhar", "n": 1, "m_total": len(data),
             "final_limits": {"lc_x": lc_x, "lic_x": lic_x, "lsc_x": lsc_x, "lc_mr": lc_mr, "lic_mr": lic_mr, "lsc_mr": lsc_mr, "sigma_hat": sigma},
-            "data_raw": data, "mr_raw": mr_raw, "rule_1_x": [i for i, v in enumerate(data) if v < lic_x or v > lsc_x],
-            "rule_1_mr": [i for i in range(1, len(data)) if mr_raw[i] < lic_mr or mr_raw[i] > lsc_mr],
+            "data_raw": data, "mr_raw": mr_raw, "we_rules_x": we_rules, "we_rules_mr": we_rules_mr, "kalman": kalman_est,
             "capability": cap, "capability_atual": cap_atual, "shift": analyze_shift_imr(deltas or _d()),
             "delta_hat_analysis": analyze_shift_imr([abs(delta_hat)])[0], "lse": config["LSE"], "lie": config["LIE"]}
 
@@ -191,7 +206,7 @@ def _mon_p(config, deltas):
     nbar = round(sum(d["n"] for d in data) / len(data))
     return {"metadata": _get_meta(config), "type": "P", "goal": "Acompanhar", "m_total": len(data),
             "final_limits": {"pbar": pbar, "limits_per_sample": lims}, "data_raw": data,
-            "rule_1": v_p, "shift": analyze_shift_p(deltas or _d(), pbar, nbar)}
+            "we_rules_p": {"R1": v_p}, "shift": analyze_shift_p(deltas or _d(), pbar, nbar)}
 
 def _mon_c(config, deltas):
     data, cbar = config["Data"], config["LC_ref"]
@@ -201,7 +216,7 @@ def _mon_c(config, deltas):
     
     return {"metadata": _get_meta(config), "type": "C", "goal": "Acompanhar", "m_total": len(data),
             "final_limits": {"lic": lic, "lc": cbar, "lsc": lsc}, "data_raw": data,
-            "rule_1": v_c, "shift": analyze_shift_c(deltas or _d(), cbar)}
+            "we_rules_c": {"R1": v_c}, "shift": analyze_shift_c(deltas or _d(), cbar)}
 
 def _get_meta(config): return {k: config[k] for k in ["Label", "Unit", "Measured_at", "Created_by"]}
 def _d(): return [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
